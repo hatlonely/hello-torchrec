@@ -1,5 +1,5 @@
 # PyTorch and TorchRec for CPU training
-# Install with: pip install -r requirements.txt
+# Install with: pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
 # Note: These are CPU-only versions. For GPU support, use https://download.pytorch.org/whl/cu121
 
 torch==2.5.0+cpu
@@ -14,7 +14,7 @@ tqdm==4.67.3
 
 # PyTorch dependencies
 numpy==1.26.4
-networkx==3.6.1
+networkx==3.4.2  # Python 3.11 compatible version
 
 # Installation URLs for CPU versions (if above versions are not available)
 # --index-url https://download.pytorch.org/whl/cpu

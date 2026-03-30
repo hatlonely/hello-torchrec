@@ -10,6 +10,7 @@
 - 🎯 **端到端流程**：样本生成 → 数据加载 → 分布式训练 → 模型评估
 - ⚙️ **YAML 配置**：所有参数通过 YAML 配置文件管理，便于实验和生产部署
 - 🔄 **智能分片**：EmbeddingShardingPlanner 自动生成最优的 embedding 表分片方案（table_wise、row_wise、column_wise）
+- 🐳 **Docker 支持**：提供完整的 Docker 镜像和部署脚本，支持容器化和多节点部署
 
 ## 快速开始
 
@@ -93,6 +94,69 @@ python -m dataloader.main
 # 快速训练测试
 python -m train.test
 ```
+
+## Docker 部署
+
+### 构建 Docker 镜像
+
+```bash
+# 使用脚本构建
+./docker-train.sh build
+
+# 或使用 docker build
+docker build -t hello-torchrec:latest .
+```
+
+### 使用 Docker 运行训练
+
+```bash
+# 快速测试
+./docker-train.sh test
+
+# 单进程训练
+./docker-train.sh single
+
+# 分布式训练（2 进程）
+./docker-train.sh distributed
+
+# 进入容器
+./docker-train.sh bash
+```
+
+### 多节点 Docker 部署
+
+**节点 0 (Master)**:
+```bash
+docker run --rm --name torchrec-node0 \
+    -v "$(pwd)/outputs:/app/outputs" \
+    -p 29500:29500 \
+    hello-torchrec:latest \
+    torchrun \
+    --nnodes=2 \
+    --nproc_per_node=2 \
+    --master_addr="192.168.1.10" \
+    --master_port=29500 \
+    --node_rank=0 \
+    -m train.main \
+    --config config/distributed.yaml
+```
+
+**节点 1**:
+```bash
+docker run --rm --name torchrec-node1 \
+    -v "$(pwd)/outputs:/app/outputs" \
+    hello-torchrec:latest \
+    torchrun \
+    --nnodes=2 \
+    --nproc_per_node=2 \
+    --master_addr="192.168.1.10" \
+    --master_port=29500 \
+    --node_rank=1 \
+    -m train.main \
+    --config config/distributed.yaml
+```
+
+详细的 Docker 部署指南请参考 [DOCKER.md](DOCKER.md)
 
 ## 配置文件说明
 
