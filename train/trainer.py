@@ -339,52 +339,92 @@ class DistributedTrainer:
 
                 sharded_param = current_state_dict[name]
 
+                # 判断是否是 ShardedTensor
+                is_sharded = hasattr(sharded_param, '_sharded_tensor') or hasattr(sharded_param, 'metadata')
+
                 # 判断是否是 embedding 层
                 is_embedding = 'embedding' in name.lower() or 'emb' in name.lower()
 
-                if is_embedding:
+                if is_sharded and is_embedding:
                     if is_main_process():
                         print(f"收集分片参数: {name}")
 
-                    # 获取分片参数的大小
-                    sharded_size = sharded_param.data.numel()
-                    full_size = full_param.data.numel()
+                    # 对于 ShardedTensor，使用 local_tensor() 获取本地分片数据
+                    try:
+                        # 获取本地分片的 tensor
+                        local_tensor = sharded_param.local_tensor()
 
-                    # 收集所有分片
-                    gathered_tensors = [
-                        torch.zeros_like(sharded_param.data)
-                        for _ in range(self.world_size)
-                    ]
-                    dist.all_gather(gathered_tensors, sharded_param.data)
+                        # 收集所有分片
+                        gathered_tensors = [torch.zeros_like(local_tensor) for _ in range(self.world_size)]
+                        dist.all_gather(gathered_tensors, local_tensor)
 
-                    # 在 rank 0 上合并分片
-                    if is_main_process():
-                        # 尝试拼接分片
-                        try:
-                            # 按维度 0 拼接（适用于 row-wise 和 table-wise 分片）
-                            full_tensor = torch.cat(gathered_tensors, dim=0)
+                        # 在 rank 0 上合并分片
+                        if is_main_process():
+                            # 获取 ShardedTensor 的元数据
+                            if hasattr(sharded_param, 'metadata'):
+                                metadata = sharded_param.metadata
+                                if is_main_process():
+                                    print(f"  分片信息: {metadata.num_shards()} 个分片, 完整大小: {metadata.size}")
 
-                            # 检查大小是否匹配
-                            if full_tensor.shape == full_param.data.shape:
-                                full_param.data = full_tensor
-                            elif full_tensor.numel() == full_param.data.numel():
-                                # 元素数量相同，reshape 后使用
-                                full_param.data = full_tensor.reshape(full_param.data.shape)
-                            else:
-                                # 大小不匹配，使用替代方案
-                                print(f"警告: 分片拼接后大小不匹配")
-                                print(f"  预期: {full_param.data.shape}")
-                                print(f"  拼接后: {full_tensor.shape}")
-                                print(f"  使用: 分片 0 的数据（简化方案）")
-                                # 使用第一个分片的数据
+                            # 尝试拼接分片
+                            try:
+                                # 按维度 0 拼接
+                                full_tensor = torch.cat(gathered_tensors, dim=0)
+
+                                # 检查是否需要 reshape
+                                if full_tensor.shape == full_param.data.shape:
+                                    # 大小完全匹配
+                                    full_param.data = full_tensor
+                                elif full_tensor.numel() == full_param.data.numel():
+                                    # 元素数量相同，需要 reshape
+                                    full_param.data = full_tensor.reshape(full_param.data.shape)
+                                    if is_main_process():
+                                        print(f"  reshape: {full_tensor.shape} -> {full_param.data.shape}")
+                                else:
+                                    # 大小不匹配
+                                    if is_main_process():
+                                        print(f"  警告: 分片拼接后大小不匹配")
+                                        print(f"    预期: {full_param.data.shape}")
+                                        print(f"    实际: {full_tensor.shape}")
+                                        print(f"    使用: rank 0 的分片数据")
+                                    # 使用第一个分片的数据
+                                    full_param.data = gathered_tensors[0].clone()
+                            except Exception as e:
+                                if is_main_process():
+                                    print(f"  警告: 无法拼接分片: {e}")
+                                    print(f"    使用 rank 0 的分片数据")
                                 full_param.data = gathered_tensors[0].clone()
-                        except Exception as e:
-                            print(f"警告: 无法拼接分片 {name}: {e}")
-                            print(f"使用当前节点的分片数据")
-                            full_param.data = sharded_param.data.clone()
+
+                    except Exception as e:
+                        # 如果无法获取 local_tensor，可能不是真正的 ShardedTensor
+                        if is_main_process():
+                            print(f"  警告: 无法处理 {name} 为 ShardedTensor: {e}")
+                            print(f"    尝试作为普通 tensor 处理")
+                        # 降级为普通 tensor 处理
+                        if hasattr(sharded_param, 'data'):
+                            tensor_data = sharded_param.data
+                        else:
+                            tensor_data = sharded_param
+
+                        if is_main_process():
+                            # 直接使用当前参数
+                            full_param.data = tensor_data.clone()
+                        # 其他进程不操作
+
+                elif is_embedding:
+                    # embedding 层但不是 ShardedTensor，直接复制
+                    if is_main_process():
+                        print(f"复制参数: {name} (非分片)")
+                    if hasattr(sharded_param, 'data'):
+                        full_param.data = sharded_param.data.clone()
+                    else:
+                        full_param.data = sharded_param.clone()
                 else:
                     # MLP 层，直接复制（所有节点相同）
-                    full_param.data = sharded_param.data.clone()
+                    if hasattr(sharded_param, 'data'):
+                        full_param.data = sharded_param.data.clone()
+                    else:
+                        full_param.data = sharded_param.clone()
 
         # 同步所有进程
         barrier()
