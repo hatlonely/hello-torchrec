@@ -1,0 +1,32 @@
+# 快速测试配置 - 1 epoch 小模型
+
+# 数据配置
+data:
+  path: "data/samples.json"
+
+# 模型配置
+model:
+  embedding:
+    dim: 32
+    # num_embeddings 使用默认值
+
+  mlp:
+    hidden_dims: [64, 32]  # 小模型
+    dropout: 0.1
+    batch_norm: true
+
+# 训练配置
+training:
+  batch_size: 32  # 小 batch size
+  learning_rate: 0.001
+  num_epochs: 1  # 只训练 1 个 epoch
+  device: "cpu"
+
+# 分布式配置
+distributed:
+  sharding_type: "table_wise"
+
+# 保存配置
+output:
+  save_path: null
+  log_interval: 20

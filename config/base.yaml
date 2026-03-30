@@ -1,0 +1,45 @@
+# 基础训练配置 - 适用于单机快速测试
+
+# 数据配置
+data:
+  path: "data/samples.json"
+
+# 模型配置
+model:
+  embedding:
+    dim: 64  # embedding 向量维度
+    num_embeddings:  # 各特征的基数（可选，默认使用预定义值）
+      user_id: 10000
+      user_age: 5
+      user_gender: 2
+      user_city: 100
+      ad_id: 1000
+      campaign_id: 100
+      advertiser_id: 50
+      ad_category: 20
+      creative_type: 3
+      device_type: 3
+      os_type: 4
+      placement_id: 10
+      hour: 24
+
+  mlp:
+    hidden_dims: [512, 256, 128, 64]  # MLP 隐藏层维度
+    dropout: 0.1  # Dropout 比例
+    batch_norm: true  # 是否使用 BatchNorm
+
+# 训练配置
+training:
+  batch_size: 256
+  learning_rate: 0.001
+  num_epochs: 10
+  device: "cpu"  # cpu 或 cuda
+
+# 分布式配置
+distributed:
+  sharding_type: "table_wise"  # table_wise, row_wise, column_wise
+
+# 保存配置
+output:
+  save_path: null  # 模型保存路径，null 表示不保存
+  log_interval: 100  # 每隔多少 batch 打印一次日志

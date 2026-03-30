@@ -1,0 +1,32 @@
+# 分布式训练配置 - 适用于多进程训练
+
+# 数据配置
+data:
+  path: "data/samples.json"
+
+# 模型配置
+model:
+  embedding:
+    dim: 128  # 更大的 embedding 维度
+    # num_embeddings 使用默认值
+
+  mlp:
+    hidden_dims: [1024, 512, 256, 128]  # 更深的网络
+    dropout: 0.1
+    batch_norm: true
+
+# 训练配置
+training:
+  batch_size: 1024  # 更大的 batch size
+  learning_rate: 0.001
+  num_epochs: 20
+  device: "cpu"
+
+# 分布式配置
+distributed:
+  sharding_type: "row_wise"  # row_wise 适合特征基数大的场景
+
+# 保存配置
+output:
+  save_path: "outputs/model.pt"
+  log_interval: 50
