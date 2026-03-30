@@ -85,10 +85,13 @@ def main():
 
     # 保存模型
     save_path = config['output'].get('save_path')
-    if save_path:
-        # 确保输出目录存在
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        trainer.save_model(save_path)
+    if not save_path:
+        # 如果没有指定保存路径，使用默认路径
+        save_path = 'outputs/model.pt'
+
+    # 确保输出目录存在
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    trainer.save_model(save_path)
 
     # 清理分布式环境
     cleanup_distributed()
