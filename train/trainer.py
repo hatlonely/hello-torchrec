@@ -281,190 +281,159 @@ class DistributedTrainer:
         """
         保存模型
 
-        多节点训练时：
-        - 只有 rank 0（主进程）保存模型
-        - Embedding 参数以 ShardedTensor 形式保存
-        - 包含完整的分片信息和元数据
-        - MLP 参数是完整的（每个节点都有副本）
-
-        加载时：
-        - 需要使用相同数量的进程加载
-        - ShardedTensor 会自动从各节点收集数据
-        - 适合继续训练或分布式推理
+        - 单节点训练：直接保存完整模型
+        - 多节点训练：自动收集所有分片，保存为完整模型
+        - 只有 rank 0（主进程）执行保存操作
         """
-        if is_main_process():
-            # 对于分布式模型，保存原始的 unsharded 模型
-            if self.world_size > 1:
-                # 访问 module 来获取原始模型
-                # 注意：参数仍然是 ShardedTensor，需要分布式环境加载
-                state_dict = self.model.module.state_dict()
+        if not is_main_process():
+            return
 
-                # 计算参数量
-                total_params = sum(p.numel() for p in self.model.module.parameters() if p.requires_grad)
-                print(f"Saving sharded model with {total_params:,} parameters per node")
-            else:
-                state_dict = self.model.state_dict()
+        # 单节点训练：直接保存
+        if self.world_size == 1:
+            state_dict = self.model.state_dict()
+            total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
             torch.save({
                 'model_state_dict': state_dict,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'config': self.config,
-                'world_size': self.world_size,
-            }, path)
-            print(f"Model saved to {path}")
-            if self.world_size > 1:
-                print("Note: This is a sharded model checkpoint.")
-                print("To load, use the same number of processes with torchrun.")
-                print("Example: torchrun --nproc_per_node=3 -m train.main --config config/distributed.yaml")
-
-    def export_model_for_inference(self, path: str):
-        """
-        导出完整的模型用于单机推理
-
-        将所有 embedding 分片收集到一个完整的模型中
-        可以在没有分布式环境的情况下加载使用
-
-        注意：
-        - 需要足够的内存来容纳完整的 embedding 表
-        - 所有进程都会参与收集操作
-        - 只有 rank 0 会保存最终模型
-        """
-        if self.world_size > 1:
-            from model import DNNModel
-            import torch.distributed as dist
-
-            if is_main_process():
-                print("="*60)
-                print("开始导出完整模型用于单机推理")
-                print("="*60)
-                print(f"当前分片数: {self.world_size}")
-                print(f"目标: 收集所有分片到单个完整模型")
-                print("="*60)
-
-            # 在所有进程上创建完整模型结构
-            full_model = DNNModel(self.config).to(self.device)
-            full_model.eval()
-
-            # 收集所有分片 embedding 参数
-            with torch.no_grad():
-                # 获取当前（分片）模型的参数
-                if hasattr(self.model, 'module'):
-                    current_state_dict = self.model.module.state_dict()
-                else:
-                    current_state_dict = self.model.state_dict()
-
-                # 遍历完整模型的所有参数
-                for name, full_param in full_model.named_parameters():
-                    if name in current_state_dict:
-                        sharded_param = current_state_dict[name]
-
-                        # 检查是否需要收集
-                        # 对于 embedding 层，需要收集所有分片
-                        # 对于 MLP 层，直接使用（所有节点相同）
-                        is_embedding = 'embedding' in name.lower() or 'emb' in name.lower()
-
-                        if is_embedding and self.world_size > 1:
-                            if is_main_process():
-                                print(f"收集分片参数: {name}")
-
-                            # 方法：使用 all_gather 收集所有分片
-                            # 获取当前分片的大小
-                            sharded_size = sharded_param.data.numel()
-
-                            # 创建缓冲区来接收所有分片
-                            # 注意：这里假设每个分片的大小相同
-                            # 实际情况可能需要更复杂的逻辑
-                            gathered_tensors = [
-                                torch.zeros_like(sharded_param.data)
-                                for _ in range(self.world_size)
-                            ]
-
-                            # All-to-all 通信：收集所有分片
-                            dist.all_gather(gathered_tensors, sharded_param.data)
-
-                            # 在 rank 0 上合并分片
-                            if is_main_process():
-                                # 拼接所有分片
-                                # 注意：这里需要根据实际的分片策略来拼接
-                                # table_wise: 每个表在不同的节点
-                                # row_wise: 每个表的行分片到不同节点
-                                # column_wise: 每个表的列分片到不同节点
-
-                                # 简化版本：直接拼接
-                                # 实际生产中需要根据分片计划来正确拼接
-                                try:
-                                    # 尝试拼接
-                                    full_tensor = torch.cat(gathered_tensors, dim=0)
-
-                                    # 如果大小匹配，直接使用
-                                    if full_tensor.numel() == full_param.data.numel():
-                                        full_param.data = full_tensor
-                                    else:
-                                        # 如果大小不匹配，使用当前分片初始化
-                                        print(f"警告: 分片拼接后大小不匹配，使用简化方案")
-                                        print(f"  预期: {full_param.data.shape}")
-                                        print(f"  实际: {full_tensor.shape}")
-                                        # 使用第一个分片的数据重复填充
-                                        # 这不是最优解，但可以工作
-                                        full_param.data = sharded_param.data.clone()
-                                except Exception as e:
-                                    if is_main_process():
-                                        print(f"警告: 无法拼接分片 {name}: {e}")
-                                        print(f"使用当前节点的分片数据")
-                                        full_param.data = sharded_param.data.clone()
-                        else:
-                            # MLP 层，直接复制
-                            full_param.data = sharded_param.data.clone()
-
-            # 同步所有进程
-            barrier()
-
-            # 只在 rank 0 保存完整模型
-            if is_main_process():
-                total_params = sum(p.numel() for p in full_model.parameters())
-                print("="*60)
-                print(f"完整模型创建成功")
-                print(f"总参数量: {total_params:,}")
-                print("="*60)
-
-                torch.save({
-                    'model_state_dict': full_model.state_dict(),
-                    'config': self.config,
-                    'sharded': False,
-                    'world_size': 1,  # 标记为单机模型
-                }, path)
-
-                print(f"完整模型已导出到: {path}")
-                print("此模型可以在单机上加载:")
-                print("  python -m serve.inference --checkpoint", path)
-                print("="*60)
-        else:
-            # 单进程情况
-            torch.save({
-                'model_state_dict': self.model.state_dict(),
-                'config': self.config,
-                'sharded': False,
                 'world_size': 1,
             }, path)
-            print(f"完整模型已导出到: {path}")
+            print(f"完整模型已保存到: {path}")
+            print(f"总参数量: {total_params:,}")
+            return
+
+        # 多节点训练：收集所有分片并保存完整模型
+        self._save_full_model_from_shards(path)
+
+    def _save_full_model_from_shards(self, path: str):
+        """
+        从分片模型中收集所有参数，保存为完整模型
+
+        注意：
+        - 需要所有进程参与分片收集
+        - 只有 rank 0 保存最终模型
+        - 需要足够的内存容纳完整模型
+        """
+        from model import DNNModel
+        import torch.distributed as dist
+
+        print("=" * 60)
+        print("多节点训练：正在收集所有分片并保存完整模型")
+        print(f"分片数量: {self.world_size}")
+        print("=" * 60)
+
+        # 在所有进程上创建完整模型结构
+        full_model = DNNModel(self.config).to(self.device)
+        full_model.eval()
+
+        # 收集所有分片参数
+        with torch.no_grad():
+            # 获取当前（分片）模型的参数
+            current_state_dict = self.model.module.state_dict()
+
+            # 遍历完整模型的所有参数
+            for name, full_param in full_model.named_parameters():
+                if name not in current_state_dict:
+                    continue
+
+                sharded_param = current_state_dict[name]
+
+                # 判断是否是 embedding 层
+                is_embedding = 'embedding' in name.lower() or 'emb' in name.lower()
+
+                if is_embedding:
+                    if is_main_process():
+                        print(f"收集分片参数: {name}")
+
+                    # 获取分片参数的大小
+                    sharded_size = sharded_param.data.numel()
+                    full_size = full_param.data.numel()
+
+                    # 收集所有分片
+                    gathered_tensors = [
+                        torch.zeros_like(sharded_param.data)
+                        for _ in range(self.world_size)
+                    ]
+                    dist.all_gather(gathered_tensors, sharded_param.data)
+
+                    # 在 rank 0 上合并分片
+                    if is_main_process():
+                        # 尝试拼接分片
+                        try:
+                            # 按维度 0 拼接（适用于 row-wise 和 table-wise 分片）
+                            full_tensor = torch.cat(gathered_tensors, dim=0)
+
+                            # 检查大小是否匹配
+                            if full_tensor.shape == full_param.data.shape:
+                                full_param.data = full_tensor
+                            elif full_tensor.numel() == full_param.data.numel():
+                                # 元素数量相同，reshape 后使用
+                                full_param.data = full_tensor.reshape(full_param.data.shape)
+                            else:
+                                # 大小不匹配，使用替代方案
+                                print(f"警告: 分片拼接后大小不匹配")
+                                print(f"  预期: {full_param.data.shape}")
+                                print(f"  拼接后: {full_tensor.shape}")
+                                print(f"  使用: 分片 0 的数据（简化方案）")
+                                # 使用第一个分片的数据
+                                full_param.data = gathered_tensors[0].clone()
+                        except Exception as e:
+                            print(f"警告: 无法拼接分片 {name}: {e}")
+                            print(f"使用当前节点的分片数据")
+                            full_param.data = sharded_param.data.clone()
+                else:
+                    # MLP 层，直接复制（所有节点相同）
+                    full_param.data = sharded_param.data.clone()
+
+        # 同步所有进程
+        barrier()
+
+        # 只在 rank 0 保存完整模型
+        if is_main_process():
+            total_params = sum(p.numel() for p in full_model.parameters())
+
+            torch.save({
+                'model_state_dict': full_model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'config': self.config,
+                'world_size': 1,  # 标记为单机模型
+            }, path)
+
+            print("=" * 60)
+            print(f"完整模型已保存到: {path}")
+            print(f"总参数量: {total_params:,}")
+            print("此模型可以在单机上加载使用")
+            print("=" * 60)
 
     def load_model(self, path: str):
         """
         加载模型
 
-        注意：
-        - 对于分片模型，必须使用相同数量的进程加载
-        - ShardedTensor 会自动从对应的节点收集数据
+        - 支持加载完整模型（world_size=1）
+        - 支持加载分片模型（需要相同数量的进程）
         """
         checkpoint = torch.load(path, map_location=self.device)
+        checkpoint_world_size = checkpoint.get('world_size', 1)
 
-        # 对于分布式模型，加载到 module（原始模型）
-        if self.world_size > 1:
-            self.model.module.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded sharded model from {path}")
-            print(f"Model trained with {checkpoint.get('world_size', 1)} processes")
+        if checkpoint_world_size == 1:
+            # 完整模型，直接加载
+            if self.world_size > 1:
+                # 如果当前是分布式训练，需要将完整模型包装为分布式模型
+                print(f"加载完整模型到分布式环境")
+                self.model.module.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"完整模型已加载: {path}")
         else:
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Model loaded from {path}")
+            # 分片模型，需要匹配进程数
+            if self.world_size != checkpoint_world_size:
+                raise ValueError(
+                    f"进程数不匹配：模型用 {checkpoint_world_size} 个进程训练，"
+                    f"当前使用 {self.world_size} 个进程"
+                )
+            self.model.module.load_state_dict(checkpoint['model_state_dict'])
+            print(f"分片模型已加载: {path}")
+            print(f"模型使用 {checkpoint_world_size} 个进程训练")
 
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

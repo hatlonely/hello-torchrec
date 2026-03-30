@@ -41,8 +41,6 @@ def main():
     parser = argparse.ArgumentParser(description='Train DNN recommendation model with torchrec')
     parser.add_argument('--config', type=str, required=True,
                        help='Path to config YAML file')
-    parser.add_argument('--export-full', type=str, default=None,
-                       help='Export full model for single-machine inference (path to save)')
     args = parser.parse_args()
 
     # 加载配置文件
@@ -91,11 +89,6 @@ def main():
         # 确保输出目录存在
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         trainer.save_model(save_path)
-
-    # 导出完整模型（如果指定）
-    if args.export_full:
-        os.makedirs(os.path.dirname(args.export_full), exist_ok=True)
-        trainer.export_model_for_inference(args.export_full)
 
     # 清理分布式环境
     cleanup_distributed()
