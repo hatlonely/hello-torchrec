@@ -95,44 +95,62 @@ python -m dataloader.main
 python -m train.test
 ```
 
-## Docker 部署
+## Docker 多节点训练
 
-### 构建 Docker 镜像
+### 构建镜像
 
 ```bash
-# 使用脚本构建
-./docker-train.sh build
-
-# 或使用 docker build
 docker build -t hello-torchrec:latest .
 ```
 
-### 使用 Docker 运行训练
+### 单机多容器训练（推荐）
+
+在同一台机器上启动多个 Docker 容器进行多节点训练：
 
 ```bash
-# 快速测试
-./docker-train.sh test
+# 使用默认配置（3 个节点，每节点 2 个进程）
+./multi-node-docker-train.sh
 
-# 单进程训练
-./docker-train.sh single
+# 自定义配置
+./multi-node-docker-train.sh --nodes 2 --nproc 1 --config config/quick_test.yaml
 
-# 分布式训练（2 进程）
-./docker-train.sh distributed
-
-# 进入容器
-./docker-train.sh bash
+# 清理容器
+./multi-node-docker-train.sh --clean
 ```
 
-### 多节点 Docker 部署
+**参数说明：**
+- `--nodes N`: 节点数量（默认: 3）
+- `--nproc N`: 每个节点的进程数（默认: 2）
+- `--config FILE`: 配置文件（默认: config/distributed.yaml）
+- `--clean`: 清理所有容器和网络
 
-**节点 0 (Master)**:
+**脚本特性：**
+- ✅ 自动创建 Docker 网络实现容器间通信
+- ✅ 自动启动多个容器模拟多节点环境
+- ✅ 训练完成后自动清理容器
+- ✅ 支持自定义节点数量和进程数
+- ✅ 实时显示训练日志
+
+**查看日志：**
+```bash
+# 查看特定容器的日志
+docker logs -f torchrec-node0  # master 节点
+docker logs -f torchrec-node1  # worker 节点 1
+docker logs -f torchrec-node2  # worker 节点 2
+```
+
+### 跨机器多节点训练
+
+如果需要在多台物理机器上部署，手动启动每个节点：
+
+**节点 0 (Master)** - IP: 192.168.1.10
 ```bash
 docker run --rm --name torchrec-node0 \
     -v "$(pwd)/outputs:/app/outputs" \
     -p 29500:29500 \
     hello-torchrec:latest \
     torchrun \
-    --nnodes=2 \
+    --nnodes=3 \
     --nproc_per_node=2 \
     --master_addr="192.168.1.10" \
     --master_port=29500 \
@@ -141,13 +159,13 @@ docker run --rm --name torchrec-node0 \
     --config config/distributed.yaml
 ```
 
-**节点 1**:
+**节点 1** - IP: 192.168.1.11
 ```bash
 docker run --rm --name torchrec-node1 \
     -v "$(pwd)/outputs:/app/outputs" \
     hello-torchrec:latest \
     torchrun \
-    --nnodes=2 \
+    --nnodes=3 \
     --nproc_per_node=2 \
     --master_addr="192.168.1.10" \
     --master_port=29500 \
@@ -156,7 +174,20 @@ docker run --rm --name torchrec-node1 \
     --config config/distributed.yaml
 ```
 
-详细的 Docker 部署指南请参考 [DOCKER.md](DOCKER.md)
+**节点 2** - IP: 192.168.1.12
+```bash
+docker run --rm --name torchrec-node2 \
+    -v "$(pwd)/outputs:/app/outputs" \
+    hello-torchrec:latest \
+    torchrun \
+    --nnodes=3 \
+    --nproc_per_node=2 \
+    --master_addr="192.168.1.10" \
+    --master_port=29500 \
+    --node_rank=2 \
+    -m train.main \
+    --config config/distributed.yaml
+```
 
 ## 配置文件说明
 
